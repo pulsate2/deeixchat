@@ -209,11 +209,15 @@ jobs:
           Before starting, copy config.sqlite.example.yaml to config.yaml, set production secrets, set server.frontend_dist_dir to ./frontend/out, create data and storage directories, then run ./backend/deeix-chat.
           DOC
           tar -C "$stage" --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -czf "$archive" backend frontend config.sqlite.example.yaml LICENSE NOTICE README.md
-          tar -tzf "$archive" | grep -qE '^backend/$'
-          tar -tzf "$archive" | grep -qE '^backend/deeix-chat$'
-          tar -tzf "$archive" | grep -qE '^frontend/out/$'
-          tar -tzf "$archive" | grep -qE '^frontend/out/index.html$'
-          test -z "$(tar -tzf "$archive" | grep -E '^\./$|^[^/]+/$' || true)"
+          tar -tzf "$archive" > "$releases/archive.contents"
+          grep -qE '^backend/$' "$releases/archive.contents"
+          grep -qE '^backend/deeix-chat$' "$releases/archive.contents"
+          grep -qE '^frontend/out/$' "$releases/archive.contents"
+          grep -qE '^frontend/out/index.html$' "$releases/archive.contents"
+          if grep -qE "^${bundle}/" "$releases/archive.contents"; then
+            echo 'Archive contains an unexpected enclosing root directory' >&2
+            exit 1
+          fi
           extract_dir=$(mktemp -d)
           trap 'rm -rf "$extract_dir"' EXIT
           tar -xzf "$archive" -C "$extract_dir"
