@@ -245,6 +245,7 @@ jobs:
           printf '%s  %s\n' "$sha256" "$(basename "$archive")" > "$releases/$bundle.sha256"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "archive_name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
+          echo "checksum=$releases/$bundle.sha256" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Upload tarball to GitHub Release
@@ -254,9 +255,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.metadata.outputs.version }}
           COMMIT: ${{ steps.metadata.outputs.commit }}
-          BUNDLE: ${{ steps.package.outputs.bundle }}
           ARCHIVE: ${{ steps.package.outputs.archive }}
-          CHECKSUM: ${{ steps.package.outputs.archive }}.sha256
+          ARCHIVE_NAME: ${{ steps.package.outputs.archive_name }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -Eeuo pipefail
@@ -270,7 +271,7 @@ jobs:
               --notes "Built from source commit ${COMMIT}. The archive contains backend/deeix-chat and frontend/out/index.html."
           fi
           release_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')
-          download_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | select(.name == "'"$BUNDLE"'.tar.gz") | .browserDownloadUrl')
+          download_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | select(.name == "'"$ARCHIVE_NAME"'") | .browserDownloadUrl')
           test -n "$release_url"
           test -n "$download_url"
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
