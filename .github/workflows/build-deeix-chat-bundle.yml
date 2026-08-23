@@ -1,0 +1,249 @@
+name: Build DEEIX Chat bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Repository to clone and build
+        required: false
+        default: https://github.com/DEEIX-AI/DEEIX-Chat.git
+        type: string
+      source_ref:
+        description: Branch, tag, or commit to build
+        required: false
+        default: dev
+        type: string
+  workflow_call:
+    inputs:
+      source_repository:
+        description: Repository to clone and build
+        required: false
+        type: string
+        default: https://github.com/DEEIX-AI/DEEIX-Chat.git
+      source_ref:
+        description: Branch, tag, or commit to build
+        required: false
+        type: string
+        default: dev
+    outputs:
+      version:
+        description: DEEIX Chat version
+        value: ${{ jobs.build.outputs.version }}
+      commit:
+        description: Built source commit
+        value: ${{ jobs.build.outputs.commit }}
+      archive:
+        description: Generated tar.gz file name
+        value: ${{ jobs.build.outputs.archive }}
+      sha256:
+        description: Generated tar.gz SHA-256
+        value: ${{ jobs.build.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      archive: ${{ steps.package.outputs.archive_name }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - name: Clone source repository
+        id: source
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -Eeuo pipefail
+          source_dir="$RUNNER_TEMP/deeix-chat-source"
+          rm -rf "$source_dir"
+          mkdir -p "$source_dir"
+          git -C "$source_dir" init --quiet
+          git -C "$source_dir" remote add origin "$SOURCE_REPOSITORY"
+          git -C "$source_dir" fetch --depth 1 origin "$SOURCE_REF"
+          git -C "$source_dir" checkout --quiet --detach FETCH_HEAD
+          echo "path=$source_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Read source metadata
+        id: metadata
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          version=$(cat "$SOURCE_DIR/VERSION")
+          commit=$(git -C "$SOURCE_DIR" rev-parse --short HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.17.0'
+          run_install: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
+      - name: Install native dependency
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libsqlite3-dev
+
+      - name: Make static export compatible
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          python3 - "$SOURCE_DIR/frontend/app/page.tsx" "$SOURCE_DIR/frontend/next.config.ts" <<'PY'
+          from pathlib import Path
+          import sys
+
+          page = Path(sys.argv[1])
+          page_text = page.read_text()
+          if 'redirect("/chat")' in page_text:
+              page.write_text('''"use client";\n\nimport { useEffect } from "react";\n\nexport default function Page() {\n  useEffect(() => {\n    window.location.replace("/chat");\n  }, []);\n\n  return (\n    <main className="flex min-h-svh items-center justify-center">\n      <a href="/chat">Open DEEIX Chat</a>\n    </main>\n  );\n}\n''')
+
+          config = Path(sys.argv[2])
+          config_text = config.read_text()
+          additions = []
+          if 'cpus:' not in config_text:
+              additions.append('    cpus: 1,')
+          if 'memoryBasedWorkersCount:' not in config_text:
+              additions.append('    memoryBasedWorkersCount: false,')
+          if 'workerThreads:' not in config_text:
+              additions.append('    workerThreads: false,')
+          if additions:
+              marker = '    useTypeScriptCli: true,\n'
+              config_text = config_text.replace(marker, marker + '\n'.join(additions) + '\n')
+              config.write_text(config_text)
+          PY
+
+      - name: Install JavaScript dependencies
+        shell: bash
+        working-directory: ${{ steps.source.outputs.path }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        shell: bash
+        working-directory: ${{ steps.source.outputs.path }}/frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=1800
+          NEXT_TELEMETRY_DISABLED: '1'
+          UV_THREADPOOL_SIZE: '1'
+        run: |
+          set -Eeuo pipefail
+          rm -rf .next out
+          timeout --signal=TERM --kill-after=30s 900s node node_modules/next/dist/bin/next build --webpack --experimental-build-mode compile
+          timeout --signal=TERM --kill-after=30s 900s node node_modules/next/dist/bin/next build --webpack --experimental-build-mode generate
+          app_output_dir="$PWD/.next/server/app"
+          test -d "$app_output_dir"
+          mkdir -p out
+          while IFS= read -r -d '' html_file; do
+            relative_path="${html_file#"$app_output_dir/"}"
+            destination="$PWD/out/$relative_path"
+            mkdir -p "$(dirname "$destination")"
+            cp "$html_file" "$destination"
+          done < <(find "$app_output_dir" -type f -name '*.html' -print0)
+          test -s out/index.html
+          test -d out/_next
+          test "$(find out -type f -name '*.html' | wc -l)" -gt 0
+
+      - name: Build backend
+        shell: bash
+        working-directory: ${{ steps.source.outputs.path }}/backend
+        env:
+          CGO_ENABLED: '1'
+          GOMAXPROCS: '2'
+        run: |
+          set -Eeuo pipefail
+          make build
+          test -x ../.cache/deeix-chat/deeix-chat
+
+      - name: Package and verify
+        id: package
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.path }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+        run: |
+          set -Eeuo pipefail
+          releases="$RUNNER_TEMP/deeix-chat-releases"
+          bundle="deeix-chat-${VERSION}-linux-amd64"
+          stage="$releases/$bundle"
+          archive="$releases/$bundle.tar.gz"
+          rm -rf "$releases"
+          mkdir -p "$stage/backend" "$stage/frontend/out"
+          cp "$SOURCE_DIR/.cache/deeix-chat/deeix-chat" "$stage/backend/deeix-chat"
+          cp -a "$SOURCE_DIR/frontend/out/." "$stage/frontend/out/"
+          cp "$SOURCE_DIR/config.sqlite.example.yaml" "$stage/config.sqlite.example.yaml"
+          cp "$SOURCE_DIR/LICENSE" "$stage/LICENSE"
+          cp "$SOURCE_DIR/NOTICE" "$stage/NOTICE"
+          chmod 0755 "$stage/backend/deeix-chat"
+          cat > "$stage/README.md" <<DOC
+          # DEEIX Chat ${VERSION} production bundle
+
+          Source commit: ${COMMIT}
+          Target: Linux x86_64
+
+          Directory layout:
+
+              backend/deeix-chat
+              frontend/out/index.html and other frontend production files
+
+          Before starting, copy config.sqlite.example.yaml to config.yaml, set production secrets, set server.frontend_dist_dir to ./frontend/out, create data and storage directories, then run ./backend/deeix-chat.
+          DOC
+          tar -C "$stage" --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -czf "$archive" backend frontend config.sqlite.example.yaml LICENSE NOTICE README.md
+          tar -tzf "$archive" | grep -qE '^backend/$'
+          tar -tzf "$archive" | grep -qE '^backend/deeix-chat$'
+          tar -tzf "$archive" | grep -qE '^frontend/out/$'
+          tar -tzf "$archive" | grep -qE '^frontend/out/index.html$'
+          test -z "$(tar -tzf "$archive" | grep -E '^\./$|^[^/]+/$' || true)"
+          extract_dir=$(mktemp -d)
+          trap 'rm -rf "$extract_dir"' EXIT
+          tar -xzf "$archive" -C "$extract_dir"
+          test -x "$extract_dir/backend/deeix-chat"
+          test -s "$extract_dir/frontend/out/index.html"
+          sha256=$(sha256sum "$archive" | awk '{print $1}')
+          printf '%s  %s\n' "$sha256" "$(basename "$archive")" > "$releases/$bundle.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "archive_name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive_name }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write summary
+        shell: bash
+        run: |
+          {
+            echo "## DEEIX Chat bundle"
+            echo
+            echo "- Version: ${{ steps.metadata.outputs.version }}"
+            echo "- Commit: ${{ steps.metadata.outputs.commit }}"
+            echo "- Archive: ${{ steps.package.outputs.archive_name }}"
+            echo "- SHA-256: ${{ steps.package.outputs.sha256 }}"
+            echo "- Frontend entry: frontend/out/index.html"
+          } >> "$GITHUB_STEP_SUMMARY"
