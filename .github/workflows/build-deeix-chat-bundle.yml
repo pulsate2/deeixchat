@@ -270,10 +270,8 @@ jobs:
               --title "DEEIX Chat ${VERSION}" \
               --notes "Built from source commit ${COMMIT}. The archive contains backend/deeix-chat and frontend/out/index.html."
           fi
-          release_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')
-          download_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | select(.name == "'"$ARCHIVE_NAME"'") | .browserDownloadUrl')
-          test -n "$release_url"
-          test -n "$download_url"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
+          download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/${ARCHIVE_NAME}"
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
           echo "download_url=$download_url" >> "$GITHUB_OUTPUT"
 
