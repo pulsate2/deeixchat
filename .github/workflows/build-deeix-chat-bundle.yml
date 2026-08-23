@@ -13,6 +13,11 @@ on:
         required: false
         default: dev
         type: string
+      release_tag:
+        description: GitHub Release tag; defaults to v{source version}
+        required: false
+        default: ''
+        type: string
   workflow_call:
     inputs:
       source_repository:
@@ -25,6 +30,11 @@ on:
         required: false
         type: string
         default: dev
+      release_tag:
+        description: GitHub Release tag; defaults to v{source version}
+        required: false
+        type: string
+        default: ''
     outputs:
       version:
         description: DEEIX Chat version
@@ -38,9 +48,15 @@ on:
       sha256:
         description: Generated tar.gz SHA-256
         value: ${{ jobs.build.outputs.sha256 }}
+      release_url:
+        description: GitHub Release URL
+        value: ${{ jobs.build.outputs.release_url }}
+      download_url:
+        description: Direct GitHub Release asset URL
+        value: ${{ jobs.build.outputs.download_url }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -50,6 +66,8 @@ jobs:
       commit: ${{ steps.metadata.outputs.commit }}
       archive: ${{ steps.package.outputs.archive_name }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      release_url: ${{ steps.release.outputs.release_url }}
+      download_url: ${{ steps.release.outputs.download_url }}
     steps:
       - name: Clone source repository
         id: source
@@ -229,15 +247,34 @@ jobs:
           echo "archive_name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
-      - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package.outputs.archive_name }}
-          path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.archive }}.sha256
-          if-no-files-found: error
-          retention-days: 14
+      - name: Upload tarball to GitHub Release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+          BUNDLE: ${{ steps.package.outputs.bundle }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.archive }}.sha256
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -Eeuo pipefail
+          release_tag="${RELEASE_TAG_INPUT:-v${VERSION}}"
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$release_tag" "$ARCHIVE" "$CHECKSUM" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$release_tag" "$ARCHIVE" "$CHECKSUM" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "DEEIX Chat ${VERSION}" \
+              --notes "Built from source commit ${COMMIT}. The archive contains backend/deeix-chat and frontend/out/index.html."
+          fi
+          release_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')
+          download_url=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | select(.name == "'"$BUNDLE"'.tar.gz") | .browserDownloadUrl')
+          test -n "$release_url"
+          test -n "$download_url"
+          echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
+          echo "download_url=$download_url" >> "$GITHUB_OUTPUT"
 
       - name: Write summary
         shell: bash
@@ -247,6 +284,8 @@ jobs:
             echo
             echo "- Version: ${{ steps.metadata.outputs.version }}"
             echo "- Commit: ${{ steps.metadata.outputs.commit }}"
+            echo "- Release: ${{ steps.release.outputs.release_url }}"
+            echo "- Download: ${{ steps.release.outputs.download_url }}"
             echo "- Archive: ${{ steps.package.outputs.archive_name }}"
             echo "- SHA-256: ${{ steps.package.outputs.sha256 }}"
             echo "- Frontend entry: frontend/out/index.html"
