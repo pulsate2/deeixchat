@@ -127,28 +127,74 @@ jobs:
           SOURCE_DIR: ${{ steps.source.outputs.path }}
         run: |
           set -Eeuo pipefail
-          python3 - "$SOURCE_DIR/apps/web/app/page.tsx" "$SOURCE_DIR/apps/web/next.config.ts" <<'PY'
+          python3 - "$SOURCE_DIR" <<'PY'
           from pathlib import Path
-          import sys
+          import sys, subprocess
 
-          page = Path(sys.argv[1])
-          page_text = page.read_text()
-          if 'redirect("/chat")' in page_text:
-              page.write_text('''"use client";\n\nimport { useEffect } from "react";\n\nexport default function Page() {\n  useEffect(() => {\n    window.location.replace("/chat");\n  }, []);\n\n  return (\n    <main className="flex min-h-svh items-center justify-center">\n      <a href="/chat">Open DEEIX Chat</a>\n    </main>\n  );\n}\n''')
+          root = Path(sys.argv[1])
+          web = root / "apps/web"
 
-          config = Path(sys.argv[2])
-          config_text = config.read_text()
-          additions = []
-          if 'cpus:' not in config_text:
-              additions.append('    cpus: 1,')
-          if 'memoryBasedWorkersCount:' not in config_text:
-              additions.append('    memoryBasedWorkersCount: false,')
-          if 'workerThreads:' not in config_text:
-              additions.append('    workerThreads: false,')
-          if additions:
-              marker = '    useTypeScriptCli: true,\n'
-              config_text = config_text.replace(marker, marker + '\n'.join(additions) + '\n')
-              config.write_text(config_text)
+          print("=== Debugging apps/web/app structure ===")
+          subprocess.run(["ls", "-R", str(web / "app")], check=False)
+
+          # 优先探测新结构下的根页面
+          page_candidates = [
+              web / "app/(app)/page.tsx",
+              web / "app/page.tsx",
+              web / "app/(shell)/page.tsx",
+              web / "app/(app)/layout.tsx",
+          ]
+
+          patched = False
+          for page_path in page_candidates:
+              if page_path.exists():
+                  text = page_path.read_text(encoding="utf-8")
+                  if 'redirect("/chat")' in text or ('redirect' in text and 'chat' in text.lower()):
+                      page_path.write_text('''"use client";
+
+import { useEffect } from "react";
+
+export default function Page() {
+  useEffect(() => {
+    window.location.replace("/chat");
+  }, []);
+
+  return (
+    <main className="flex min-h-svh items-center justify-center">
+      <a href="/chat">Open DEEIX Chat</a>
+    </main>
+  );
+}
+''', encoding="utf-8")
+                      print(f"✓ Patched root redirect page: {page_path.name} at {page_path.relative_to(root)}")
+                      patched = True
+                      break
+
+          if not patched:
+              print("⚠️ Could not find page containing redirect to /chat")
+
+          # next.config.ts（新位置）
+          config_path = web / "next.config.ts"
+          if config_path.exists():
+              config_text = config_path.read_text(encoding="utf-8")
+              additions = []
+              if "cpus:" not in config_text:
+                  additions.append("    cpus: 1,")
+              if "memoryBasedWorkersCount:" not in config_text:
+                  additions.append("    memoryBasedWorkersCount: false,")
+              if "workerThreads:" not in config_text:
+                  additions.append("    workerThreads: false,")
+
+              if additions:
+                  marker = "useTypeScriptCli: true,"
+                  if marker in config_text:
+                      config_text = config_text.replace(marker, marker + "\n" + "\n".join(additions) + "\n")
+                      config_path.write_text(config_text, encoding="utf-8")
+                      print(f"✓ Patched next.config.ts with static export settings")
+                  else:
+                      print("⚠️ Found next.config.ts but marker not found")
+          else:
+              print("⚠️ next.config.ts not found at expected location")
           PY
 
       - name: Install JavaScript dependencies
@@ -220,11 +266,12 @@ jobs:
           Target: Linux x86_64
 
           Directory layout:
-
               backend/deeix-chat
               frontend/out/index.html and other frontend production files
 
-          Before starting, copy config.sqlite.example.yaml to config.yaml, set production secrets, set server.frontend_dist_dir to ./frontend/out, create data and storage directories, then run ./backend/deeix-chat.
+          Before starting, copy config.sqlite.example.yaml to config.yaml, set production secrets,
+          set server.frontend_dist_dir to ./frontend/out, create data and storage directories,
+          then run ./backend/deeix-chat.
           DOC
           tar -C "$stage" --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -czf "$archive" backend frontend config.sqlite.example.yaml LICENSE NOTICE README.md
           tar -tzf "$archive" > "$releases/archive.contents"
