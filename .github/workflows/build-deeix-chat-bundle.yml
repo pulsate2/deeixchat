@@ -127,25 +127,25 @@ jobs:
           SOURCE_DIR: ${{ steps.source.outputs.path }}
         run: |
           set -Eeuo pipefail
-          python3 - "$SOURCE_DIR" <<'PY'
+          cat > /tmp/fix.py <<'PYTHON'
           from pathlib import Path
-          import sys, subprocess
+          import sys
+          import subprocess
 
           root = Path(sys.argv[1])
           web = root / "apps/web"
 
-          print("=== Debugging apps/web/app structure ===")
+          print("=== apps/web/app directory structure ===")
           subprocess.run(["ls", "-R", str(web / "app")], check=False)
 
-          # 优先探测新结构下的根页面
+          # 精确适配新 Route Groups 结构
           page_candidates = [
               web / "app/(app)/page.tsx",
               web / "app/page.tsx",
               web / "app/(shell)/page.tsx",
-              web / "app/(app)/layout.tsx",
           ]
 
-          patched = False
+          patched_page = False
           for page_path in page_candidates:
               if page_path.exists():
                   text = page_path.read_text(encoding="utf-8")
@@ -166,14 +166,14 @@ export default function Page() {
   );
 }
 ''', encoding="utf-8")
-                      print(f"✓ Patched root redirect page: {page_path.name} at {page_path.relative_to(root)}")
-                      patched = True
+                      print("Patched root redirect page:", page_path.relative_to(root))
+                      patched_page = True
                       break
 
-          if not patched:
-              print("⚠️ Could not find page containing redirect to /chat")
+          if not patched_page:
+              print("Warning: Could not find page.tsx containing redirect to /chat")
 
-          # next.config.ts（新位置）
+          # Patch next.config.ts
           config_path = web / "next.config.ts"
           if config_path.exists():
               config_text = config_path.read_text(encoding="utf-8")
@@ -190,12 +190,16 @@ export default function Page() {
                   if marker in config_text:
                       config_text = config_text.replace(marker, marker + "\n" + "\n".join(additions) + "\n")
                       config_path.write_text(config_text, encoding="utf-8")
-                      print(f"✓ Patched next.config.ts with static export settings")
+                      print("Patched next.config.ts for static export compatibility")
                   else:
-                      print("⚠️ Found next.config.ts but marker not found")
+                      print("Warning: next.config.ts found but marker not present")
+              else:
+                  print("next.config.ts already contains required static export settings")
           else:
-              print("⚠️ next.config.ts not found at expected location")
-          PY
+              print("Warning: next.config.ts not found at apps/web/next.config.ts")
+          PYTHON
+
+          python3 /tmp/fix.py "$SOURCE_DIR"
 
       - name: Install JavaScript dependencies
         shell: bash
