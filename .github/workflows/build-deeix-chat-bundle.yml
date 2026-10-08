@@ -127,79 +127,53 @@ jobs:
           SOURCE_DIR: ${{ steps.source.outputs.path }}
         run: |
           set -Eeuo pipefail
-          cat > /tmp/fix.py <<'PYTHON'
-          from pathlib import Path
-          import sys
-          import subprocess
+          WEB_DIR="$SOURCE_DIR/apps/web"
 
-          root = Path(sys.argv[1])
-          web = root / "apps/web"
+          echo "=== Debugging apps/web structure ==="
+          ls -la "$WEB_DIR"
+          echo "app directory contents:"
+          ls -R "$WEB_DIR/app" 2>&1 || echo "app directory not found"
 
-          print("=== apps/web/app directory structure ===")
-          subprocess.run(["ls", "-R", str(web / "app")], check=False)
-
-          # 精确适配新 Route Groups 结构
-          page_candidates = [
-              web / "app/(app)/page.tsx",
-              web / "app/page.tsx",
-              web / "app/(shell)/page.tsx",
-          ]
-
-          patched_page = False
-          for page_path in page_candidates:
-              if page_path.exists():
-                  text = page_path.read_text(encoding="utf-8")
-                  if 'redirect("/chat")' in text or ('redirect' in text and 'chat' in text.lower()):
-                      page_path.write_text('''"use client";
-
-import { useEffect } from "react";
-
-export default function Page() {
-  useEffect(() => {
-    window.location.replace("/chat");
-  }, []);
-
-  return (
-    <main className="flex min-h-svh items-center justify-center">
-      <a href="/chat">Open DEEIX Chat</a>
-    </main>
-  );
-}
-''', encoding="utf-8")
-                      print("Patched root redirect page:", page_path.relative_to(root))
-                      patched_page = True
-                      break
-
-          if not patched_page:
-              print("Warning: Could not find page.tsx containing redirect to /chat")
+          # Patch root page using echo (avoid YAML parser error)
+          PATCHED=false
+          for page in "$WEB_DIR/app/(app)/page.tsx" "$WEB_DIR/app/page.tsx"; do
+            if [ -f "$page" ]; then
+              echo '"use client";' > "$page"
+              echo "" >> "$page"
+              echo 'import { useEffect } from "react";' >> "$page"
+              echo "" >> "$page"
+              echo "export default function Page() {" >> "$page"
+              echo "  useEffect(() => {" >> "$page"
+              echo '    window.location.replace("/chat");' >> "$page"
+              echo "  }, []);" >> "$page"
+              echo "" >> "$page"
+              echo "  return (" >> "$page"
+              echo '    <main className="flex min-h-svh items-center justify-center">' >> "$page"
+              echo '      <a href="/chat">Open DEEIX Chat</a>' >> "$page"
+              echo "    </main>" >> "$page"
+              echo "  );" >> "$page"
+              echo "}" >> "$page"
+              echo "✓ Patched root redirect page: $page"
+              PATCHED=true
+              break
+            fi
+          done
+          if [ "$PATCHED" = false ]; then
+            echo "⚠️ Warning: Could not find page.tsx to patch (redirect to /chat)"
+          fi
 
           # Patch next.config.ts
-          config_path = web / "next.config.ts"
-          if config_path.exists():
-              config_text = config_path.read_text(encoding="utf-8")
-              additions = []
-              if "cpus:" not in config_text:
-                  additions.append("    cpus: 1,")
-              if "memoryBasedWorkersCount:" not in config_text:
-                  additions.append("    memoryBasedWorkersCount: false,")
-              if "workerThreads:" not in config_text:
-                  additions.append("    workerThreads: false,")
-
-              if additions:
-                  marker = "useTypeScriptCli: true,"
-                  if marker in config_text:
-                      config_text = config_text.replace(marker, marker + "\n" + "\n".join(additions) + "\n")
-                      config_path.write_text(config_text, encoding="utf-8")
-                      print("Patched next.config.ts for static export compatibility")
-                  else:
-                      print("Warning: next.config.ts found but marker not present")
-              else:
-                  print("next.config.ts already contains required static export settings")
-          else:
-              print("Warning: next.config.ts not found at apps/web/next.config.ts")
-          PYTHON
-
-          python3 /tmp/fix.py "$SOURCE_DIR"
+          CONFIG="$WEB_DIR/next.config.ts"
+          if [ -f "$CONFIG" ]; then
+            if ! grep -q "cpus:" "$CONFIG"; then
+              sed -i '/useTypeScriptCli: true,/a\    cpus: 1,\n    memoryBasedWorkersCount: false,\n    workerThreads: false,' "$CONFIG"
+              echo "✓ Patched next.config.ts for static export compatibility"
+            else
+              echo "✓ next.config.ts already contains required settings"
+            fi
+          else
+            echo "⚠️ Warning: next.config.ts not found at $CONFIG"
+          fi
 
       - name: Install JavaScript dependencies
         shell: bash
