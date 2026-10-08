@@ -233,7 +233,7 @@ jobs:
           mkdir -p "$stage/backend" "$stage/frontend/out"
           cp "$SOURCE_DIR/.cache/deeix-chat/deeix-chat" "$stage/backend/deeix-chat"
           cp -a "$SOURCE_DIR/apps/web/out/." "$stage/frontend/out/"
-          cp "$SOURCE_DIR/config.sqlite.example.yaml" "$stage/config.sqlite.example.yaml"
+          cp "$SOURCE_DIR/deploy/config.sqlite.example.yaml" "$stage/config.sqlite.example.yaml"
           cp "$SOURCE_DIR/LICENSE" "$stage/LICENSE"
           cp "$SOURCE_DIR/NOTICE" "$stage/NOTICE"
           chmod 0755 "$stage/backend/deeix-chat"
