@@ -127,7 +127,7 @@ jobs:
           SOURCE_DIR: ${{ steps.source.outputs.path }}
         run: |
           set -Eeuo pipefail
-          python3 - "$SOURCE_DIR/frontend/app/page.tsx" "$SOURCE_DIR/frontend/next.config.ts" <<'PY'
+          python3 - "$SOURCE_DIR/apps/web/app/page.tsx" "$SOURCE_DIR/apps/web/next.config.ts" <<'PY'
           from pathlib import Path
           import sys
 
@@ -158,7 +158,7 @@ jobs:
 
       - name: Build frontend
         shell: bash
-        working-directory: ${{ steps.source.outputs.path }}/frontend
+        working-directory: ${{ steps.source.outputs.path }}/apps/web
         env:
           NODE_OPTIONS: --max-old-space-size=1800
           NEXT_TELEMETRY_DISABLED: '1'
@@ -208,7 +208,7 @@ jobs:
           rm -rf "$releases"
           mkdir -p "$stage/backend" "$stage/frontend/out"
           cp "$SOURCE_DIR/.cache/deeix-chat/deeix-chat" "$stage/backend/deeix-chat"
-          cp -a "$SOURCE_DIR/frontend/out/." "$stage/frontend/out/"
+          cp -a "$SOURCE_DIR/apps/web/out/." "$stage/frontend/out/"
           cp "$SOURCE_DIR/config.sqlite.example.yaml" "$stage/config.sqlite.example.yaml"
           cp "$SOURCE_DIR/LICENSE" "$stage/LICENSE"
           cp "$SOURCE_DIR/NOTICE" "$stage/NOTICE"
